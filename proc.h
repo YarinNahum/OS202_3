@@ -34,6 +34,23 @@ struct context {
 
 enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+#define MAX_PSYC_PAGES    16 // In any given time only 16 pages must be in the main memory
+#define MAX_TOTAL_PAGES   32 // maximum number of pages for a process, in main memory and swapFile
+
+struct page {
+  char* va;
+  int isTaken;
+  pte_t* pgdir;
+  uint age;
+  struct page* next;
+  struct page* prev;
+};
+
+struct pageInFile{
+  char* va;
+  //uint offset;
+};
+
 // Per-process state
 struct proc {
   uint sz;                     // Size of process memory (bytes)
@@ -51,6 +68,13 @@ struct proc {
   char name[16];               // Process name (debugging)
   //Swap file. must initiate with create swap file
   struct file *swapFile;      //page file
+  int numOfPagesMem;          // number of pages in main memory
+  int numOfPagesFile;          // number of pages in swapFile
+  int numOfPageFaults;          // number of pagesFaults
+  struct page mainMemPages[MAX_PSYC_PAGES];     // array for the pages in mainMemory
+  struct pageInFile swapFilePages[MAX_PSYC_PAGES];    // array for the pages in swapFile
+  struct page* head;            // head of the list
+  struct page* tail;            // tail of the list
 };
 
 // Process memory is laid out contiguously, low addresses first:

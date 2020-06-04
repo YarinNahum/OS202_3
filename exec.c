@@ -19,6 +19,41 @@ exec(char *path, char **argv)
   pde_t *pgdir, *oldpgdir;
   struct proc *curproc = myproc();
 
+
+  struct page memPages[MAX_PSYC_PAGES];
+  struct pageInFile swapPages[MAX_PSYC_PAGES];
+  int numMem;
+  int numSwap;
+  struct page* head;
+  struct page* tail;
+  for(i = 0; i < MAX_PSYC_PAGES ; i++)
+  {
+    memPages[i].va = curproc->mainMemPages[i].va;
+    memPages[i].isTaken = curproc->mainMemPages[i].isTaken;
+    memPages[i].pgdir = curproc->mainMemPages[i].pgdir;
+    swapPages[i].va = curproc->swapFilePages[i].va;
+    memPages[i].next = curproc->mainMemPages[i].next;
+    memPages[i].prev = curproc->mainMemPages[i].prev;
+    memPages[i].age = curproc->mainMemPages[i].age;
+    numMem = curproc->numOfPagesMem;
+    numSwap = curproc->numOfPagesFile;
+    head = curproc->head;
+    tail = curproc->tail;
+  }
+
+    for(i = 0; i < MAX_PSYC_PAGES ; i++)
+  {
+    curproc->mainMemPages[i].va = (char*)0xffffffff;
+    curproc->mainMemPages[i].isTaken = 0;
+    curproc->mainMemPages[i].pgdir = 0;
+    curproc->mainMemPages[i].next = 0;
+    curproc->mainMemPages[i].prev = 0;
+    curproc->numOfPagesMem = 0;
+    curproc->numOfPagesFile = 0;
+    curproc->head = 0;
+    curproc->tail = 0;
+  }
+
   begin_op();
 
   if((ip = namei(path)) == 0){
@@ -93,7 +128,6 @@ exec(char *path, char **argv)
       last = s+1;
   safestrcpy(curproc->name, last, sizeof(curproc->name));
 
-  // Commit to the user image.
   oldpgdir = curproc->pgdir;
   curproc->pgdir = pgdir;
   curproc->sz = sz;
@@ -106,6 +140,20 @@ exec(char *path, char **argv)
  bad:
   if(pgdir)
     freevm(pgdir);
+  for(i = 0; i < MAX_PSYC_PAGES ; i++)
+  {
+    curproc->mainMemPages[i].va = memPages[i].va;
+    curproc->mainMemPages[i].isTaken = memPages[i].isTaken;
+    curproc->mainMemPages[i].pgdir = memPages[i].pgdir;
+    curproc->swapFilePages[i].va = swapPages[i].va;
+    curproc->mainMemPages[i].next = memPages[i].next;
+    curproc->mainMemPages[i].prev = memPages[i].prev;
+    curproc->mainMemPages[i].age = memPages[i].age;
+    curproc->numOfPagesMem = numMem ;
+    curproc->numOfPagesFile = numSwap;
+    curproc->head = head;
+    curproc->tail = tail;
+  }
   if(ip){
     iunlockput(ip);
     end_op();

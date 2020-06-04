@@ -7,6 +7,7 @@
 #include "proc.h"
 #include "elf.h"
 
+
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
 
@@ -230,6 +231,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
     return oldsz;
 
   a = PGROUNDUP(oldsz);
+
   for(; a < newsz; a += PGSIZE){
     mem = kalloc();
     if(mem == 0){
@@ -244,7 +246,38 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       kfree(mem);
       return 0;
     }
+
+    #if SELECTION==NONE 
+    goto end;
+    #endif
+    struct proc* p = myproc();
+    if(p->pid > 2) // not touching the init and sh processes
+    {
+      if(p->numOfPagesFile == MAX_PSYC_PAGES)
+        panic("allocuvm: more than 32 pages allocated");
+      int i =0;
+      if(p->numOfPagesMem < MAX_PSYC_PAGES)
+      {
+        for(; i< MAX_PSYC_PAGES; i++)
+        {
+          if(p->mainMemPages[i].isTaken == 0)
+            {
+              createNewPageMainMemory((char*)a,i,pgdir);
+              break;
+            }
+        }
+      }
+      else
+      {
+        cprintf("ram is full\n");
+        int index = removePageToSwapFile(pgdir);
+        createNewPageMainMemory((char*)a , index,pgdir);
+      }
+    }
+
   }
+  goto end;
+  end:
   return newsz;
 }
 
@@ -257,6 +290,7 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 {
   pte_t *pte;
   uint a, pa;
+  struct proc* p = myproc();
 
   if(newsz >= oldsz)
     return oldsz;
@@ -272,6 +306,23 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
         panic("kfree");
       char *v = P2V(pa);
       kfree(v);
+      int i = 0;
+      for(; i < MAX_PSYC_PAGES; i++)
+      {
+        if((p->mainMemPages[i].va == (char*)a) && (p->pgdir == pgdir))
+          {
+            p->numOfPagesMem -= 1;
+            p->mainMemPages[i].va = (char*)0xffffffff;
+            if(p->head == &p->mainMemPages[i])
+              p->head = p->mainMemPages[i].next;
+            if(p->tail == &p->mainMemPages[i])
+              p->tail = p->mainMemPages[i].prev;
+            p->mainMemPages[i].prev = 0;
+            p->mainMemPages[i].next = 0;
+            p->mainMemPages[i].isTaken = 0;
+            p->mainMemPages[i].pgdir = 0;
+          }
+      }
       *pte = 0;
     }
   }
@@ -325,8 +376,17 @@ copyuvm(pde_t *pgdir, uint sz)
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
-    if(!(*pte & PTE_P))
-      panic("copyuvm: page not present");
+    if((myproc()->pid > 2) && (*pte & PTE_PG)){
+      pte_t * pte1 = walkpgdir(d,(char*)i,1);
+      *pte1 &= ~PTE_P;
+      *pte1 |= PTE_PG;
+      lcr3(V2P(myproc()->pgdir));
+      continue;
+    }
+    if(!(*pte & PTE_P)){
+      if(!(*pte & PTE_PG))
+        panic("copyuvm: page not present");
+    }
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -335,7 +395,7 @@ copyuvm(pde_t *pgdir, uint sz)
     if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
       kfree(mem);
       goto bad;
-    }
+      }
   }
   return d;
 
@@ -385,10 +445,290 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   return 0;
 }
 
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
+// create a new page to main memory, put the page in 
+//mainMemPages[index] with virtual address va in directory pgdir
+// 
+void
+createNewPageMainMemory(char* va, int index,pde_t* pgdir)
+{
+  if(index == -1)
+    return;
+  #if SELECTION == SCFIFO
+    createPageSCFIFO(va,index,pgdir);
+  #endif
+  #if SELECTION == NFUA
+    createPageNFUA(va, index,pgdir);
+  #endif
+  #if SELECTION == LAPA
+    createPageLAPA(va,index,pgdir);
+  #endif
+  #if SELECTION == AQ
+    createPageAQ(va,index,pgdir);
+  #endif
+}
+
+void
+createPageSCFIFO(char* va, int index, pde_t* pgdir)
+{
+  struct proc* p = myproc();
+  p->numOfPagesMem += 1;
+  p->mainMemPages[index].va = va;
+  p->mainMemPages[index].age = 0;
+  p->mainMemPages[index].isTaken = 1;
+  p->mainMemPages[index].pgdir = pgdir;
+  if(p->head == 0){
+    p->head = &p->mainMemPages[index];
+    p->tail = p->head;
+    p->mainMemPages[index].next = p->tail;
+    p->mainMemPages[index].prev = p->head;
+  }
+  else
+  {
+    p->mainMemPages[index].next = p->head;
+    p->mainMemPages[index].prev = p->tail;
+    p->tail->next = &p->mainMemPages[index];
+    p->head->prev = &p->mainMemPages[index];
+    p->head = &p->mainMemPages[index];
+  }
+  pte_t * t = walkpgdir(pgdir, va, 0);
+  *t |= PTE_P;
+  *t &= ~PTE_PG;
+  lcr3(V2P(pgdir));
+
+  // struct page* headCur = p->head;
+  // int i = 0;
+  // for(; i < 16 ; i++)
+  //   {
+  //     if(headCur == 0)
+  //       break;
+  //     cprintf("parent va is %d\n",(uint)headCur->va);
+  //     headCur = headCur->next;
+  //   }
+  //   cprintf("done\n");
+
+}
+
+
+void
+createPageNFUA(char* va, int index, pde_t* pgdir)
+{
+  return;
+}
+
+void
+createPageLAPA(char* va, int index, pde_t* pgdir)
+{
+  return;
+}
+
+void
+createPageAQ(char* va, int index, pde_t* pgdir)
+{
+  return;
+}
+
+
+int
+removePageToSwapFile(pde_t* pgdir)
+{
+  #if SELECTION == NONE
+  goto end;
+  #endif
+  struct proc* p = myproc();
+  int index = findPageToRemove();
+  int j = 0;
+  int found = 0;
+  for(; j < MAX_PSYC_PAGES ; j++){
+    if(p->swapFilePages[j].va == (char*)0xffffffff)
+    {
+      found = 1;
+      p->swapFilePages[j].va = p->mainMemPages[index].va;
+      break;
+    }
+  }
+  if(!found)
+  {
+    panic("removePageToSwapFile: didnt found empty pace in pages in swap file array");
+  }
+  
+  if(writeToSwapFile(p,p->mainMemPages[index].va,j*PGSIZE, PGSIZE) == -1)
+    {
+    panic("removePageToSwapFile: write to buffer");
+    goto end;
+    }
+  p->numOfPagesMem -= 1;
+  p->numOfPagesFile += 1;
+  p->mainMemPages[index].isTaken = 0;
+  // p->mainMemPages[index].next = 0;
+  // p->mainMemPages[index].prev = 0;
+  p->head = p->head->next;
+  p->tail->next = p->head;
+  p->head->prev = p->tail;
+  p->mainMemPages[index].pgdir = 0;
+  pte_t *pte = walkpgdir(pgdir, p->mainMemPages[index].va, 0);
+  if(pte == 0)
+    panic("pte is 0");
+  p->mainMemPages[index].va = (char*)0xffffffff;
+  *pte |= PTE_PG;
+  *pte &= (~PTE_P);
+  kfree((char*)P2V(PTE_ADDR(*pte)));
+  lcr3(V2P(pgdir));
+  return index;
+  end:
+  return -1;
+}
+
+
+
+void
+checkSegFault(char* va)
+{
+  #if SELECTION==NONE
+    goto end;
+  #endif
+  
+  struct proc* p = myproc();
+  p->numOfPageFaults += 1;
+  char* va1 = (char*)PGROUNDDOWN((uint)va);
+  char* mem = kalloc();
+  if (mem == 0)
+    panic("no more memory");
+  int i = 0;
+  int j = 0;
+  pte_t* t1 = walkpgdir(p->pgdir, va1, 0);
+  if((*t1 & PTE_PG) == 0){
+    panic("page is not page out");
+  }
+  *t1 = 0;
+  *t1 |= PTE_P | PTE_W | PTE_U;
+  *t1 &= ~PTE_PG;
+  *t1 |= PTE_ADDR(V2P(mem));
+  for(; i < MAX_PSYC_PAGES; i++)
+  {
+    if(p->mainMemPages[i].isTaken == 0)
+    {
+      for(; j< MAX_PSYC_PAGES; j++){
+        if(p->swapFilePages[j].va == va1)
+        {
+          if(readFromSwapFile(p,mem,j*PGSIZE,PGSIZE) == -1)
+            panic("read from file in segfault");
+          p->numOfPagesMem += 1;
+          p->numOfPagesFile -= 1;
+          p->mainMemPages[i].va = p->swapFilePages[j].va;
+          p->mainMemPages[i].isTaken = 1;
+          p->mainMemPages[i].pgdir = p->pgdir;
+          p->swapFilePages[j].va = (char*)0xffffffff;
+
+          #if SELECTION == NFUA
+            p->mainMemPages[i].age = 0;
+          #else
+          #if SELECTION == LAPA
+          p->mainMemPages[i].age = 0xffffffff;
+          #else
+          p->mainMemPages[i].next = p->head;
+          p->mainMemPages[i].prev = p->tail;
+          p->head = &p->mainMemPages[i];
+          #endif
+          #endif
+          lcr3(V2P(p->pgdir));
+          goto end;
+        }
+      }
+        panic("checkSegFault: should never happen"); 
+    }
+  }
+  // didn't found any place in main memory, need to switch with a page in swap file
+  int index = findPageToRemove();
+  for(; j<MAX_PSYC_PAGES;j++)
+  {
+    if(p->swapFilePages[j].va == va1)
+    {
+      if(readFromSwapFile(p, mem, j*PGSIZE, PGSIZE) == -1)
+        panic("read from file in segfault");
+      //buffer contains the data of the page we want to put in main memory
+      p->swapFilePages[j].va = p->mainMemPages[index].va;
+      if (writeToSwapFile(p,p->mainMemPages[index].va, j*PGSIZE, PGSIZE) == -1)
+        panic("checkSegFault: failed to write to memory");
+      p->mainMemPages[index].isTaken = 1;
+      pte_t* tToRemove = walkpgdir(p->pgdir,p->mainMemPages[index].va,0);
+      *tToRemove |= PTE_PG;
+      *tToRemove &= ~PTE_P;
+      kfree((char*)(P2V(PTE_ADDR(*tToRemove))));
+      lcr3(V2P(p->pgdir));
+      p->mainMemPages[index].va = va1;
+      #if SELECTION == NFUA
+      p->mainMemPages[index].age = 0;
+      #else
+      #if SELECTION == LAPA
+      p->mainMemPages[index].age = 0xffffffff;
+      #endif
+      #endif
+      j = 16;;
+    }
+  }
+
+  end:
+  return;
+}
+
+
+// find the index of the page in main memory to remove according to the algorithem
+// and remove it, return the index of the page in the main memory array
+int
+findPageToRemove()
+{
+  #if SELECTION == SCFIFO
+    return findPageToRemoveSCFIFO();
+  #endif
+  #if SELECTION == NFUA
+    return findPageToRemoveNFUA();
+  #endif
+  #if SELECTION == AQ
+    return findPageToRemoveAQ();
+  #endif
+  #if SELECTION == LAPA
+    return findPageToRemoveLAPA();
+  #endif
+  return -1;
+}
+
+int
+findPageToRemoveSCFIFO()
+{
+  int index = -1;
+  struct proc* p = myproc();
+  int found =0;
+  while(!found)
+  {
+    struct page* current = p->head;
+    if(current->isTaken)
+    {
+      pte_t * t = walkpgdir(current->pgdir,current->va, 0);
+      if((*t & PTE_A) == 0)
+      {
+        int i = 0;
+        for(; i<MAX_PSYC_PAGES; i++)
+        {
+          if(p->mainMemPages[i].isTaken && p->mainMemPages[i].va == current->va)
+          {
+            //cprintf("SCFIFO %d\n",(uint)current->va);
+            index = i;
+            found = 1;
+          }
+        }
+      }
+      else
+      {
+        *t = *t & (~PTE_A);
+      }
+    }
+    if(!found)
+    {
+    p->head = p->head->next;
+    p->tail = p->tail->next;
+    current = p->head;
+    }
+  }
+  return index;
+}
 

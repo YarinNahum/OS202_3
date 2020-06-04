@@ -106,6 +106,25 @@ found:
   // which returns to trapret.
   sp -= 4;
   *(uint*)sp = (uint)trapret;
+  if(p->pid > 2){
+    int i = 0;
+    for(; i< MAX_PSYC_PAGES ; i++)
+      {
+        p->mainMemPages[i].age = 0;
+        p->mainMemPages[i].isTaken = 0;
+        p->mainMemPages[i].pgdir = 0;
+        p->mainMemPages[i].va = (char*)0xffffffff;
+        p->mainMemPages[i].next = 0;
+        p->mainMemPages[i].prev = 0;
+        p->swapFilePages[i].va = (char*)0xffffffff;
+      }
+      p->numOfPagesMem = 0;
+      p->numOfPagesFile = 0;
+      p->numOfPageFaults = 0;
+      p->head = 0;
+      p->tail = 0;
+      createSwapFile(p);
+  }
 
   sp -= sizeof *p->context;
   p->context = (struct context*)sp;
@@ -174,6 +193,43 @@ growproc(int n)
   return 0;
 }
 
+// curproc is the father of np, copy the linked list of the father to the
+// child in the currect positions
+void
+copyLinkedList(struct proc* np, struct proc* curproc)
+{
+  char* headVA = curproc->head->va;
+  char* tailVA = curproc->tail->va;
+  int i = 0;
+  for(; i < MAX_PSYC_PAGES ; i++)
+  {
+    if(np->mainMemPages[i].va == headVA)
+      np->head = &np->mainMemPages[i];
+    if(np->mainMemPages[i].va == tailVA)
+      np->tail = &np->mainMemPages[i];
+  }
+  if((!np->head) || (!np->tail))
+  {
+    return;
+  }
+  struct page* p = np->head;
+  struct page* curP = curproc->head;
+  for(i = 0; i < np->numOfPagesMem; i++)
+  {
+    curP = curP->next;
+    for(int j = 0 ; j < MAX_PSYC_PAGES ; j++){
+      if(np->mainMemPages[j].va == curP->va){
+        p->next = &np->mainMemPages[j];
+        struct page* temp = p;
+        p = p->next;
+        p->prev = temp;
+        break;
+      }
+    }
+  }
+
+}
+
 // Create a new process copying p as the parent.
 // Sets up stack to return as if from system call.
 // Caller must set state of returned proc to RUNNABLE.
@@ -183,7 +239,9 @@ fork(void)
   int i, pid;
   struct proc *np;
   struct proc *curproc = myproc();
+  static char buffer[PGSIZE];
 
+  //cprintf("im starting fork\n");
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
@@ -202,6 +260,41 @@ fork(void)
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
+  if(curproc->pid > 2){
+    np->numOfPagesFile = curproc->numOfPagesFile;
+    np->numOfPagesMem = curproc->numOfPagesMem;
+    np->numOfPageFaults = curproc->numOfPageFaults;
+  for(i = 0; i < MAX_PSYC_PAGES ; i++)
+  {
+    np->swapFilePages[i].va = curproc->swapFilePages[i].va;
+    np->mainMemPages[i].va = curproc->mainMemPages[i].va;
+    np->mainMemPages[i].age = curproc->mainMemPages[i].age;
+    np->mainMemPages[i].isTaken = curproc->mainMemPages[i].isTaken;
+    if(np->mainMemPages[i].isTaken)
+      np->mainMemPages[i].pgdir = np->pgdir;
+    if(np->swapFilePages[i].va != (char*)0xffffffff)
+      {
+        readFromSwapFile(curproc,buffer,i*PGSIZE,PGSIZE);
+        writeToSwapFile(np,buffer,i*PGSIZE,PGSIZE);
+      }
+    }
+  }
+  if(curproc->pid > 2){
+  copyLinkedList(np, curproc);
+  }
+  // struct page* head = np->head;
+  // struct page* headCur = curproc->head;
+
+  // for(i = 0 ; i < 16 ; i++)
+  //   {
+  //     if(head == 0)
+  //       break;
+  //     cprintf("child va is %d", (uint)head->va);
+  //     cprintf("   parent va is %d\n",(uint)headCur->va);
+  //     head = head->next;
+  //     headCur = headCur->next;
+  //   }
+  // }
 
   for(i = 0; i < NOFILE; i++)
     if(curproc->ofile[i])
@@ -212,11 +305,14 @@ fork(void)
 
   pid = np->pid;
 
+  //cprintf("im done with fork\n");
+
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-
   release(&ptable.lock);
+
+
 
   return pid;
 }
@@ -246,6 +342,8 @@ exit(void)
   iput(curproc->cwd);
   end_op();
   curproc->cwd = 0;
+  if(curproc->pid > 2)
+    removeSwapFile(curproc);
 
   acquire(&ptable.lock);
 

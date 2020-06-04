@@ -131,7 +131,7 @@ xchg(volatile uint *addr, uint newval)
 }
 
 static inline uint
-rcr2(void)
+rcr2(void) // return the VIRTUAL address that caused the page fault
 {
   uint val;
   asm volatile("movl %%cr2,%0" : "=r" (val));
@@ -181,3 +181,9 @@ struct trapframe {
   ushort ss;
   ushort padding6;
 };
+
+#define NONE 0
+#define NFUA 1
+#define LAPA 2
+#define SCFIFO 3
+#define AQ 4

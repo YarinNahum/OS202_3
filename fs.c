@@ -794,7 +794,7 @@ int
 writeToSwapFile(struct proc * p, char* buffer, uint placeOnFile, uint size)
 {
   p->swapFile->off = placeOnFile;
-
+  //cprintf("writeToSwapFile: im in pid %d, buffer is %d\n ", p->pid, (uint)buffer);
   return filewrite(p->swapFile, buffer, size);
 
 }
@@ -804,6 +804,6 @@ int
 readFromSwapFile(struct proc * p, char* buffer, uint placeOnFile, uint size)
 {
   p->swapFile->off = placeOnFile;
-
+  //cprintf("readFromSwapFile: im in pid %d, buffer is %d\n ", p->pid, (uint)buffer);
   return fileread(p->swapFile, buffer,  size);
 }

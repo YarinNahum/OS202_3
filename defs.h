@@ -130,6 +130,7 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
+void            copyLinkedList(struct proc* np, struct proc* curproc);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -195,6 +196,18 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
+void            createNewPageMainMemory(char* va, int index,pde_t* pgdir);
+void            createPageSCFIFO(char* va, int index,pde_t* pgdir);
+void            createPageNFUA(char* va, int index,pde_t* pgdir);
+void            createPageLAPA(char* va, int index,pde_t* pgdir);
+void            createPageAQ(char* va, int index,pde_t* pgdir);
+int             removePageToSwapFile(pde_t* pgdir);
+int             findPageToRemove(void);
+int             findPageToRemoveSCFIFO(void);
+int             findPageToRemoveNFUA(void);
+int             findPageToRemoveAQ(void);
+int             findPageToRemoveLAPA(void);
+void            checkSegFault(char* va);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
