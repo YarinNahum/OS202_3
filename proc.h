@@ -71,6 +71,7 @@ struct proc {
   int numOfPagesMem;          // number of pages in main memory
   int numOfPagesFile;          // number of pages in swapFile
   int numOfPageFaults;          // number of pagesFaults
+  int numOfSwaps;                // number of times we swapped pages
   struct page mainMemPages[MAX_PSYC_PAGES];     // array for the pages in mainMemory
   struct pageInFile swapFilePages[MAX_PSYC_PAGES];    // array for the pages in swapFile
   struct page* head;            // head of the list
@@ -82,3 +83,12 @@ struct proc {
 //   original data and bss
 //   fixed-size stack
 //   expandable heap
+
+#define NONE 0
+#define NFUA 1
+#define LAPA 2
+#define SCFIFO 3 
+#define AQ 4
+
+#define FALSE 0 
+#define TRUE 1

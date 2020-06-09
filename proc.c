@@ -15,6 +15,7 @@ struct {
 static struct proc *initproc;
 
 int nextpid = 1;
+int numerOfFreePages = 0;
 extern void forkret(void);
 extern void trapret(void);
 
@@ -121,6 +122,7 @@ found:
       p->numOfPagesMem = 0;
       p->numOfPagesFile = 0;
       p->numOfPageFaults = 0;
+      p->numOfSwaps = 0;
       p->head = 0;
       p->tail = 0;
       createSwapFile(p);
@@ -143,7 +145,7 @@ userinit(void)
   extern char _binary_initcode_start[], _binary_initcode_size[];
 
   p = allocproc();
-  
+  numerOfFreePages = getNumberOfFreePages();
   initproc = p;
   if((p->pgdir = setupkvm()) == 0)
     panic("userinit: out of memory?");
@@ -260,28 +262,34 @@ fork(void)
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
+  #if SELECTION==NONE
+  goto end;
+  #endif
   if(curproc->pid > 2){
     np->numOfPagesFile = curproc->numOfPagesFile;
     np->numOfPagesMem = curproc->numOfPagesMem;
-    np->numOfPageFaults = curproc->numOfPageFaults;
-  for(i = 0; i < MAX_PSYC_PAGES ; i++)
-  {
-    np->swapFilePages[i].va = curproc->swapFilePages[i].va;
-    np->mainMemPages[i].va = curproc->mainMemPages[i].va;
-    np->mainMemPages[i].age = curproc->mainMemPages[i].age;
-    np->mainMemPages[i].isTaken = curproc->mainMemPages[i].isTaken;
-    if(np->mainMemPages[i].isTaken)
-      np->mainMemPages[i].pgdir = np->pgdir;
-    if(np->swapFilePages[i].va != (char*)0xffffffff)
-      {
-        readFromSwapFile(curproc,buffer,i*PGSIZE,PGSIZE);
-        writeToSwapFile(np,buffer,i*PGSIZE,PGSIZE);
+    np->numOfPageFaults = 0;
+    np->numOfSwaps = 0;
+    for(i = 0; i < MAX_PSYC_PAGES ; i++)
+    {
+      np->swapFilePages[i].va = curproc->swapFilePages[i].va;
+      np->mainMemPages[i].va = curproc->mainMemPages[i].va;
+      np->mainMemPages[i].age = curproc->mainMemPages[i].age;
+      np->mainMemPages[i].isTaken = curproc->mainMemPages[i].isTaken;
+      if(np->mainMemPages[i].isTaken)
+        np->mainMemPages[i].pgdir = np->pgdir;
+      if(np->swapFilePages[i].va != (char*)0xffffffff)
+        {
+          readFromSwapFile(curproc,buffer,i*PGSIZE,PGSIZE);
+          writeToSwapFile(np,buffer,i*PGSIZE,PGSIZE);
+        }
       }
     }
-  }
   if(curproc->pid > 2){
   copyLinkedList(np, curproc);
   }
+  goto end;
+  end:
   // struct page* head = np->head;
   // struct page* headCur = curproc->head;
 
@@ -310,9 +318,8 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+  
   release(&ptable.lock);
-
-
 
   return pid;
 }
@@ -613,7 +620,9 @@ procdump(void)
   struct proc *p;
   char *state;
   uint pc[10];
-
+  #if VERBOSE_PRINT == TRUE
+  int currentFreePages = numerOfFreePages;
+  #endif
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->state == UNUSED)
       continue;
@@ -621,7 +630,21 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
+    #if VERBOSE_PRINT==TRUE
+    if(p->pid > 2)
+    {
+      int allocated = p->numOfPagesMem;
+      allocated += p->numOfPagesFile;
+      currentFreePages -= allocated;
+        cprintf("%d %s %d %d %d %d %s", p->pid, state,allocated, p->numOfPagesFile, p->numOfPageFaults, p->numOfSwaps ,p->name);
+    }
+    else
+      cprintf("%d %s %s", p->pid, state, p->name);  
+    #else
+    #if VERBOSE_PRINT==FALSE
     cprintf("%d %s %s", p->pid, state, p->name);
+    #endif
+    #endif
     if(p->state == SLEEPING){
       getcallerpcs((uint*)p->context->ebp+2, pc);
       for(i=0; i<10 && pc[i] != 0; i++)
@@ -629,4 +652,7 @@ procdump(void)
     }
     cprintf("\n");
   }
+    #if VERBOSE_PRINT == TRUE
+    cprintf("%d / %d free page frames in the system\n", currentFreePages, numerOfFreePages);
+    #endif
 }

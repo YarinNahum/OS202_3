@@ -19,40 +19,49 @@ exec(char *path, char **argv)
   pde_t *pgdir, *oldpgdir;
   struct proc *curproc = myproc();
 
-
+  #if SELECTION!=NONE
   struct page memPages[MAX_PSYC_PAGES];
   struct pageInFile swapPages[MAX_PSYC_PAGES];
-  int numMem;
-  int numSwap;
-  struct page* head;
-  struct page* tail;
-  for(i = 0; i < MAX_PSYC_PAGES ; i++)
-  {
-    memPages[i].va = curproc->mainMemPages[i].va;
-    memPages[i].isTaken = curproc->mainMemPages[i].isTaken;
-    memPages[i].pgdir = curproc->mainMemPages[i].pgdir;
-    swapPages[i].va = curproc->swapFilePages[i].va;
-    memPages[i].next = curproc->mainMemPages[i].next;
-    memPages[i].prev = curproc->mainMemPages[i].prev;
-    memPages[i].age = curproc->mainMemPages[i].age;
-    numMem = curproc->numOfPagesMem;
-    numSwap = curproc->numOfPagesFile;
-    head = curproc->head;
-    tail = curproc->tail;
-  }
-
+  int numMem = 0;
+  int numSwapFile = 0;
+  int numOfSwaps = 0;
+  int numPageFault = 0;
+  struct page* head = 0;
+  struct page* tail = 0;
+  if(curproc->pid > 2){
     for(i = 0; i < MAX_PSYC_PAGES ; i++)
-  {
-    curproc->mainMemPages[i].va = (char*)0xffffffff;
-    curproc->mainMemPages[i].isTaken = 0;
-    curproc->mainMemPages[i].pgdir = 0;
-    curproc->mainMemPages[i].next = 0;
-    curproc->mainMemPages[i].prev = 0;
-    curproc->numOfPagesMem = 0;
-    curproc->numOfPagesFile = 0;
-    curproc->head = 0;
-    curproc->tail = 0;
+    {
+      memPages[i].va = curproc->mainMemPages[i].va;
+      memPages[i].isTaken = curproc->mainMemPages[i].isTaken;
+      memPages[i].pgdir = curproc->mainMemPages[i].pgdir;
+      swapPages[i].va = curproc->swapFilePages[i].va;
+      memPages[i].next = curproc->mainMemPages[i].next;
+      memPages[i].prev = curproc->mainMemPages[i].prev;
+      memPages[i].age = curproc->mainMemPages[i].age;
+      numMem = curproc->numOfPagesMem;
+      numSwapFile = curproc->numOfPagesFile;
+      numPageFault = curproc->numOfPageFaults;
+      numOfSwaps = curproc->numOfSwaps;
+      head = curproc->head;
+      tail = curproc->tail;
+    }
+    for(i = 0; i < MAX_PSYC_PAGES ; i++)
+    {
+      curproc->mainMemPages[i].va = (char*)0xffffffff;
+      curproc->mainMemPages[i].isTaken = 0;
+      curproc->mainMemPages[i].pgdir = 0;
+      curproc->mainMemPages[i].next = 0;
+      curproc->mainMemPages[i].prev = 0;
+      curproc->swapFilePages[i].va = (char*)0xffffffff;
+      curproc->numOfPagesMem = 0;
+      curproc->numOfPagesFile = 0;
+      curproc->numOfPageFaults = 0;
+      curproc->numOfSwaps = 0;
+      curproc->head = 0;
+      curproc->tail = 0;
+    }
   }
+  #endif
 
   begin_op();
 
@@ -140,6 +149,9 @@ exec(char *path, char **argv)
  bad:
   if(pgdir)
     freevm(pgdir);
+  #if SELECTION!=NONE
+  cprintf("should not print\n");
+  if(curproc->pid > 2){
   for(i = 0; i < MAX_PSYC_PAGES ; i++)
   {
     curproc->mainMemPages[i].va = memPages[i].va;
@@ -150,10 +162,14 @@ exec(char *path, char **argv)
     curproc->mainMemPages[i].prev = memPages[i].prev;
     curproc->mainMemPages[i].age = memPages[i].age;
     curproc->numOfPagesMem = numMem ;
-    curproc->numOfPagesFile = numSwap;
+    curproc->numOfPagesFile = numSwapFile;
+    curproc->numOfPageFaults = numPageFault;
+    curproc->numOfSwaps = numOfSwaps;
     curproc->head = head;
     curproc->tail = tail;
+    }
   }
+  #endif
   if(ip){
     iunlockput(ip);
     end_op();

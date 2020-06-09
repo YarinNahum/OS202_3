@@ -77,24 +77,12 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
-  case T_PGFLT:
-    #if SELECTION == SCFIFO
-    checkSegFault((char*)rcr2());
-    break;
-    #endif
-    #if SELECTION == NFUA
-    checkSegFault((char*)rcr2());
-    break;
-    #endif
-    #if SELECTION == LAPA
-    checkSegFault((char*)rcr2());
-    break;
-    #endif
-    #if SELECTION == AQ
-    checkSegFault((char*)rcr2());
-    break;
-    #endif
+    #if SELECTION!=NONE
     
+    case T_PGFLT:
+      checkSegFault((char*)rcr2());
+      break;
+    #endif
   //PAGEBREAK: 13
   default:
     if(myproc() == 0 || (tf->cs&3) == 0){
@@ -121,7 +109,12 @@ trap(struct trapframe *tf)
   // If interrupts were on while locks held, would need to check nlock.
   if(myproc() && myproc()->state == RUNNING &&
      tf->trapno == T_IRQ0+IRQ_TIMER)
-    yield();
+     {
+      #if SELECTION==NFUA || SELECTION==LAPA
+      updateAGE();
+      #endif
+      yield();
+     }
 
   // Check if the process has been killed since we yielded
   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)

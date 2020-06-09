@@ -78,6 +78,7 @@ char*           kalloc(void);
 void            kfree(char*);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
+int             getNumberOfFreePages();
 
 // kbd.c
 void            kbdintr(void);
@@ -208,6 +209,9 @@ int             findPageToRemoveNFUA(void);
 int             findPageToRemoveAQ(void);
 int             findPageToRemoveLAPA(void);
 void            checkSegFault(char* va);
+void            updateAGE(void);
+void            switchPages(int j,int i);
+void            fixAQ(int index);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

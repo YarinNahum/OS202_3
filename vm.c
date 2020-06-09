@@ -247,9 +247,7 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       return 0;
     }
 
-    #if SELECTION==NONE 
-    goto end;
-    #endif
+    #if SELECTION!=NONE 
     struct proc* p = myproc();
     if(p->pid > 2) // not touching the init and sh processes
     {
@@ -269,15 +267,12 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       }
       else
       {
-        cprintf("ram is full\n");
         int index = removePageToSwapFile(pgdir);
         createNewPageMainMemory((char*)a , index,pgdir);
       }
     }
-
+    #endif
   }
-  goto end;
-  end:
   return newsz;
 }
 
@@ -290,7 +285,6 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 {
   pte_t *pte;
   uint a, pa;
-  struct proc* p = myproc();
 
   if(newsz >= oldsz)
     return oldsz;
@@ -306,6 +300,10 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
         panic("kfree");
       char *v = P2V(pa);
       kfree(v);
+      #if SELECTION==NONE
+      goto end;
+      #endif
+      struct proc* p = myproc();
       int i = 0;
       for(; i < MAX_PSYC_PAGES; i++)
       {
@@ -323,6 +321,8 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
             p->mainMemPages[i].pgdir = 0;
           }
       }
+      goto end;
+      end:;
       *pte = 0;
     }
   }
@@ -376,13 +376,18 @@ copyuvm(pde_t *pgdir, uint sz)
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
+    #if SELECTION==NONE
+    goto endcopy;
+    #endif
     if((myproc()->pid > 2) && (*pte & PTE_PG)){
       pte_t * pte1 = walkpgdir(d,(char*)i,1);
       *pte1 &= ~PTE_P;
       *pte1 |= PTE_PG;
       lcr3(V2P(myproc()->pgdir));
       continue;
+      goto endcopy;
     }
+    endcopy:;
     if(!(*pte & PTE_P)){
       if(!(*pte & PTE_PG))
         panic("copyuvm: page not present");
@@ -512,18 +517,70 @@ createPageSCFIFO(char* va, int index, pde_t* pgdir)
 void
 createPageNFUA(char* va, int index, pde_t* pgdir)
 {
-  return;
+  struct proc* p = myproc();
+  p->numOfPagesMem += 1;
+  p->mainMemPages[index].age = 0;
+  p->mainMemPages[index].isTaken = 1;
+  p->mainMemPages[index].va = va;
+  p->mainMemPages[index].pgdir = pgdir;
+  p->mainMemPages[index].prev = 0;
+  p->mainMemPages[index].next = 0;
+  pte_t * pte = walkpgdir(pgdir,va,0);
+  *pte |= PTE_P;
+  *pte &= ~PTE_PG;
+  lcr3(V2P(pgdir));
+  return; 
 }
 
 void
 createPageLAPA(char* va, int index, pde_t* pgdir)
 {
-  return;
+  struct proc* p = myproc();
+  p->numOfPagesMem += 1;
+  p->mainMemPages[index].age = 0xffffffff;
+  p->mainMemPages[index].isTaken = 1;
+  p->mainMemPages[index].va = va;
+  p->mainMemPages[index].pgdir = pgdir;
+  p->mainMemPages[index].prev = 0;
+  p->mainMemPages[index].next = 0;
+  pte_t * pte = walkpgdir(pgdir,va,0);
+  *pte |= PTE_P;
+  *pte &= ~PTE_PG;
+  lcr3(V2P(pgdir));
+  return;   
 }
 
 void
 createPageAQ(char* va, int index, pde_t* pgdir)
 {
+    struct proc* p = myproc();
+  p->numOfPagesMem += 1;
+  p->mainMemPages[index].age = 0xffffffff;
+  p->mainMemPages[index].isTaken = 1;
+  p->mainMemPages[index].va = va;
+  p->mainMemPages[index].pgdir = pgdir;
+  p->mainMemPages[index].prev = 0;
+  p->mainMemPages[index].next = 0;
+  pte_t * pte = walkpgdir(pgdir,va,0);
+  *pte |= PTE_P;
+  *pte &= ~PTE_PG;
+  lcr3(V2P(pgdir));
+
+  fixAQ(index);
+  return;   
+}
+
+void
+fixAQ(int index)
+{
+  if (index == 0)
+    return;
+  int i = index;
+  for(; i > 0; i--)
+  {
+    switchPages(i, i-1);
+  }
+  //cprintf("done fixing\n");
   return;
 }
 
@@ -558,12 +615,13 @@ removePageToSwapFile(pde_t* pgdir)
     }
   p->numOfPagesMem -= 1;
   p->numOfPagesFile += 1;
+  p->numOfSwaps +=1;
   p->mainMemPages[index].isTaken = 0;
-  // p->mainMemPages[index].next = 0;
-  // p->mainMemPages[index].prev = 0;
+  #if SELECTION==SCFIFO
   p->head = p->head->next;
   p->tail->next = p->head;
   p->head->prev = p->tail;
+  #endif
   p->mainMemPages[index].pgdir = 0;
   pte_t *pte = walkpgdir(pgdir, p->mainMemPages[index].va, 0);
   if(pte == 0)
@@ -582,61 +640,59 @@ removePageToSwapFile(pde_t* pgdir)
 
 void
 checkSegFault(char* va)
-{
-  #if SELECTION==NONE
-    goto end;
-  #endif
-  
+{  
   struct proc* p = myproc();
   p->numOfPageFaults += 1;
   char* va1 = (char*)PGROUNDDOWN((uint)va);
   char* mem = kalloc();
   if (mem == 0)
     panic("no more memory");
-  int i = 0;
   int j = 0;
   pte_t* t1 = walkpgdir(p->pgdir, va1, 0);
   if((*t1 & PTE_PG) == 0){
     panic("page is not page out");
   }
+  p->numOfPageFaults +=1;
+  uint flags = PTE_FLAGS(*t1);
   *t1 = 0;
-  *t1 |= PTE_P | PTE_W | PTE_U;
-  *t1 &= ~PTE_PG;
-  *t1 |= PTE_ADDR(V2P(mem));
-  for(; i < MAX_PSYC_PAGES; i++)
-  {
-    if(p->mainMemPages[i].isTaken == 0)
-    {
-      for(; j< MAX_PSYC_PAGES; j++){
-        if(p->swapFilePages[j].va == va1)
-        {
-          if(readFromSwapFile(p,mem,j*PGSIZE,PGSIZE) == -1)
-            panic("read from file in segfault");
-          p->numOfPagesMem += 1;
-          p->numOfPagesFile -= 1;
-          p->mainMemPages[i].va = p->swapFilePages[j].va;
-          p->mainMemPages[i].isTaken = 1;
-          p->mainMemPages[i].pgdir = p->pgdir;
-          p->swapFilePages[j].va = (char*)0xffffffff;
+  flags |= PTE_P | PTE_W | PTE_U;
+  flags &= ~PTE_PG;
+  *t1 |= PTE_ADDR(V2P(mem)) | flags;
+  // for(; i < MAX_PSYC_PAGES; i++)
+  // {
+  //   if(p->mainMemPages[i].isTaken == 0)
+  //   {
+  //     for(; j< MAX_PSYC_PAGES; j++){
+  //       if(p->swapFilePages[j].va == va1)
+  //       {
+  //         cprintf("am i even getting here?\n");
+  //         if(readFromSwapFile(p,mem,j*PGSIZE,PGSIZE) == -1)
+  //           panic("read from file in segfault");
+  //         p->numOfPagesMem += 1;
+  //         p->numOfPagesFile -= 1;
+  //         p->mainMemPages[i].va = p->swapFilePages[j].va;
+  //         p->mainMemPages[i].isTaken = 1;
+  //         p->mainMemPages[i].pgdir = p->pgdir;
+  //         p->swapFilePages[j].va = (char*)0xffffffff;
 
-          #if SELECTION == NFUA
-            p->mainMemPages[i].age = 0;
-          #else
-          #if SELECTION == LAPA
-          p->mainMemPages[i].age = 0xffffffff;
-          #else
-          p->mainMemPages[i].next = p->head;
-          p->mainMemPages[i].prev = p->tail;
-          p->head = &p->mainMemPages[i];
-          #endif
-          #endif
-          lcr3(V2P(p->pgdir));
-          goto end;
-        }
-      }
-        panic("checkSegFault: should never happen"); 
-    }
-  }
+  //         #if SELECTION == NFUA
+  //           p->mainMemPages[i].age = 0;
+  //         #else
+  //         #if SELECTION == LAPA
+  //         p->mainMemPages[i].age = 0xffffffff;
+  //         #else
+  //         p->mainMemPages[i].next = p->head;
+  //         p->mainMemPages[i].prev = p->tail;
+  //         p->head = &p->mainMemPages[i];
+  //         #endif
+  //         #endif
+  //         lcr3(V2P(p->pgdir));
+  //         goto end;
+  //       }
+  //     }
+  //       panic("checkSegFault: should never happen"); 
+  //   }
+  // }
   // didn't found any place in main memory, need to switch with a page in swap file
   int index = findPageToRemove();
   for(; j<MAX_PSYC_PAGES;j++)
@@ -661,13 +717,17 @@ checkSegFault(char* va)
       #else
       #if SELECTION == LAPA
       p->mainMemPages[index].age = 0xffffffff;
+      #else 
+      #if SELECTION == AQ
+      fixAQ(15);          // put the new page in the head of the Q
       #endif
       #endif
+      #endif
+      p->numOfSwaps +=1;
       j = 16;;
     }
   }
 
-  end:
   return;
 }
 
@@ -681,6 +741,7 @@ findPageToRemove()
     return findPageToRemoveSCFIFO();
   #endif
   #if SELECTION == NFUA
+    //cprintf("im here\n");
     return findPageToRemoveNFUA();
   #endif
   #if SELECTION == AQ
@@ -732,3 +793,126 @@ findPageToRemoveSCFIFO()
   return index;
 }
 
+
+int
+findPageToRemoveNFUA(){
+  struct proc* p = myproc();
+  int index = -1;
+  uint maxValue = (uint)0xffffffff;
+  for(int i = 0 ; i < MAX_PSYC_PAGES; i++)
+  {
+    if(p->mainMemPages[i].isTaken)
+    {
+      if(p->mainMemPages[i].age <= maxValue)
+      {
+        maxValue = p->mainMemPages[i].age;
+        index = i;
+      }
+    }
+  }
+  //cprintf("removing page number %d\n", index);
+  return index;
+}
+
+
+int
+findPageToRemoveLAPA()
+{
+  struct proc* p = myproc();
+  int index = -1;
+  int maxValue = 32;
+  for(int i = 0; i < MAX_PSYC_PAGES ; i++)
+  {
+    if(p->mainMemPages[i].isTaken)
+    {
+      int count = 0;
+      uint age = p->mainMemPages[i].age;
+      for(int j = 0; j < 32 ; j++)
+      {
+        count += (age & 0x1);
+        age = age >> 1;
+      }
+      if(count <= maxValue)
+      {
+        maxValue = count;
+        index = i;
+      }
+    }
+  }
+  //cprintf("removing page numnber %d\n",index);
+  return index;
+}
+
+
+int
+findPageToRemoveAQ()
+{
+  struct proc* p = myproc();
+  int j = 15 ; 
+  for(; j > 0 ; j--)
+  {
+    if(p->mainMemPages[j].isTaken)
+    {
+      pte_t * pte = walkpgdir(p->mainMemPages[j].pgdir, p->mainMemPages[j].va, 0);
+      if(*pte & PTE_A)
+      {
+        *pte &= ~PTE_A;
+        if(p->mainMemPages[j-1].isTaken){
+          pte_t * pte_next = walkpgdir(p->mainMemPages[j-1].pgdir,p->mainMemPages[j-1].va,0);
+          if((*pte_next & PTE_A) == 0) // need to switch places
+          {
+            switchPages(j,j-1);
+            j--; // 
+          }
+          else
+          {
+            *pte_next &= ~PTE_A;
+          }
+        }
+      }
+    }
+  }
+
+  return 15; // always return the last index of the array
+}
+
+void
+switchPages(int j, int i)
+{
+  struct proc* p = myproc();
+  char* va = p->mainMemPages[j].va;
+  p->mainMemPages[j].va = p->mainMemPages[i].va;
+  p->mainMemPages[i].va = va;
+  return;
+}
+
+
+void
+updateAGE()
+{
+  if(myproc()->pid > 2)
+  {
+    struct proc* p = myproc();
+    int i = 0;
+    for(; i< MAX_PSYC_PAGES; i++)
+    {
+      if(p->mainMemPages[i].isTaken)
+      {
+        pte_t * pte = walkpgdir(p->mainMemPages[i].pgdir, p->mainMemPages[i].va, 0);
+        if((*pte & PTE_A) == 0)
+        {
+          uint val = p->mainMemPages[i].age >> 1;
+          val &= ~0x80000000;
+          p->mainMemPages[i].age = val;
+        }
+        else
+        {
+          *pte &= ~PTE_A;
+          uint val = p->mainMemPages[i].age >> 1;
+          val |= 0x80000000;
+          p->mainMemPages[i].age = val;
+        }
+      }
+    }
+  }
+}
