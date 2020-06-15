@@ -957,12 +957,12 @@ copyOnWrite(char *va)
   pte_t *pte;
   char *mem;
   if((uint)va >= KERNBASE || (pte = walkpgdir(myproc()->pgdir, (void*)va, 0)) == 0)
-    panic("aaa");
+    panic("Invalid virtual address\n");
   if(!(*pte & PTE_P) && !(*pte && PTE_U))
-    panic("bbb");
+    panic("Inaccessable page\n");
   
   if(*pte & PTE_W)
-    panic("COW on writable page");
+    panic("COW on writable page\n");
   
   pa = PTE_ADDR(*pte);
   acquire(&ref_lock);
@@ -979,7 +979,9 @@ copyOnWrite(char *va)
       release(&ref_lock);
       if((mem = kalloc()) == 0)
       {
-        panic("ccc");
+        myproc()->killed = 1;
+        cprintf("Out of memory\n");
+        return;
       }
       memmove(mem, (char*)P2V(pa), PGSIZE);
       acquire(&ref_lock);
