@@ -6,10 +6,14 @@
 #include "mmu.h"
 #include "proc.h"
 #include "elf.h"
+#include "spinlock.h"
 
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
+
+struct spinlock ref_lock;
+char ref_counters[PHYSTOP/PGSIZE];
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -191,6 +195,10 @@ inituvm(pde_t *pgdir, char *init, uint sz)
   memset(mem, 0, PGSIZE);
   mappages(pgdir, 0, PGSIZE, V2P(mem), PTE_W|PTE_U);
   memmove(mem, init, sz);
+
+  acquire(&ref_lock);
+  ref_counters[V2P(mem)/PGSIZE] = ref_counters[V2P(mem)/PGSIZE] + 1;
+  release(&ref_lock);
 }
 
 // Load a program segment into pgdir.  addr must be page-aligned
@@ -247,6 +255,10 @@ allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       return 0;
     }
 
+    acquire(&ref_lock);
+    ref_counters[V2P(mem)/PGSIZE] = ref_counters[V2P(mem)/PGSIZE] + 1;
+    release(&ref_lock);
+
     #if SELECTION!=NONE 
     struct proc* p = myproc();
     if(p->pid > 2) // not touching the init and sh processes
@@ -298,8 +310,16 @@ deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       pa = PTE_ADDR(*pte);
       if(pa == 0)
         panic("kfree");
-      char *v = P2V(pa);
-      kfree(v);
+      
+      acquire(&ref_lock);
+      ref_counters[pa/PGSIZE] = ref_counters[pa/PGSIZE] - 1;
+      if(ref_counters[pa/PGSIZE] == 0)
+      {
+        char *v = P2V(pa);
+        kfree(v);
+      }
+      release(&ref_lock);
+      
       #if SELECTION==NONE
       goto end;
       #endif
@@ -369,7 +389,7 @@ copyuvm(pde_t *pgdir, uint sz)
   pde_t *d;
   pte_t *pte;
   uint pa, i, flags;
-  char *mem;
+  //char *mem;
 
   if((d = setupkvm()) == 0)
     return 0;
@@ -383,7 +403,8 @@ copyuvm(pde_t *pgdir, uint sz)
       pte_t * pte1 = walkpgdir(d,(char*)i,1);
       *pte1 &= ~PTE_P;
       *pte1 |= PTE_PG;
-      lcr3(V2P(myproc()->pgdir));
+      *pte1 &= ~PTE_W;
+      lcr3(V2P(d));
       continue;
       goto endcopy;
     }
@@ -392,20 +413,21 @@ copyuvm(pde_t *pgdir, uint sz)
       if(!(*pte & PTE_PG))
         panic("copyuvm: page not present");
     }
+    *pte &= ~PTE_W;
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
       goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
-      goto bad;
-      }
+    acquire(&ref_lock);
+    ref_counters[pa/PGSIZE] = ref_counters[pa/PGSIZE] + 1;
+    release(&ref_lock);
   }
+  lcr3(V2P(myproc()->pgdir));
   return d;
 
 bad:
   freevm(d);
+  lcr3(V2P(myproc()->pgdir));
   return 0;
 }
 
@@ -629,7 +651,11 @@ removePageToSwapFile(pde_t* pgdir)
   p->mainMemPages[index].va = (char*)0xffffffff;
   *pte |= PTE_PG;
   *pte &= (~PTE_P);
-  kfree((char*)P2V(PTE_ADDR(*pte)));
+  acquire(&ref_lock);
+  ref_counters[PTE_ADDR(*pte)/PGSIZE] = ref_counters[PTE_ADDR(*pte)/PGSIZE] - 1;
+  if(ref_counters[PTE_ADDR(*pte)/PGSIZE] < 1)
+    kfree((char*)P2V(PTE_ADDR(*pte)));
+  release(&ref_lock);
   lcr3(V2P(pgdir));
   return index;
   end:
@@ -640,24 +666,32 @@ removePageToSwapFile(pde_t* pgdir)
 
 void
 checkSegFault(char* va)
-{  
+{
   struct proc* p = myproc();
   p->numOfPageFaults += 1;
   char* va1 = (char*)PGROUNDDOWN((uint)va);
+  pte_t* t1 = walkpgdir(p->pgdir, va1, 0);
+  if((*t1 & PTE_PG) == 0){
+    copyOnWrite(va);
+    return;
+  }
+  #if SELECTION == NONE
+  return;
+  #endif
   char* mem = kalloc();
   if (mem == 0)
     panic("no more memory");
   int j = 0;
-  pte_t* t1 = walkpgdir(p->pgdir, va1, 0);
-  if((*t1 & PTE_PG) == 0){
-    panic("page is not page out");
-  }
   p->numOfPageFaults +=1;
   uint flags = PTE_FLAGS(*t1);
   *t1 = 0;
   flags |= PTE_P | PTE_W | PTE_U;
   flags &= ~PTE_PG;
   *t1 |= PTE_ADDR(V2P(mem)) | flags;
+
+  acquire(&ref_lock);
+  ref_counters[V2P(mem)/PGSIZE] = ref_counters[V2P(mem)/PGSIZE] + 1;
+  release(&ref_lock);
   // for(; i < MAX_PSYC_PAGES; i++)
   // {
   //   if(p->mainMemPages[i].isTaken == 0)
@@ -709,7 +743,11 @@ checkSegFault(char* va)
       pte_t* tToRemove = walkpgdir(p->pgdir,p->mainMemPages[index].va,0);
       *tToRemove |= PTE_PG;
       *tToRemove &= ~PTE_P;
-      kfree((char*)(P2V(PTE_ADDR(*tToRemove))));
+      acquire(&ref_lock);
+      ref_counters[PTE_ADDR(*tToRemove)/PGSIZE] = ref_counters[PTE_ADDR(*tToRemove)/PGSIZE] - 1;
+      if(ref_counters[PTE_ADDR(*tToRemove)/PGSIZE] < 1)
+        kfree((char*)(P2V(PTE_ADDR(*tToRemove))));
+      release(&ref_lock);
       lcr3(V2P(p->pgdir));
       p->mainMemPages[index].va = va1;
       #if SELECTION == NFUA
@@ -914,5 +952,54 @@ updateAGE()
         }
       }
     }
+  }
+}
+
+void
+copyOnWrite(char *va)
+{
+  uint pa;
+  pte_t *pte;
+  char *mem;
+  if((uint)va >= KERNBASE || (pte = walkpgdir(myproc()->pgdir, (void*)va, 0)) == 0)
+    panic("Invalid virtual address\n");
+  if(!(*pte & PTE_P) && !(*pte && PTE_U))
+    panic("Inaccessable page\n");
+  
+  if(*pte & PTE_W)
+    panic("COW on writable page\n");
+  
+  pa = PTE_ADDR(*pte);
+  acquire(&ref_lock);
+  if(ref_counters[pa/PGSIZE] == 1)
+  {
+    release(&ref_lock);
+    *pte |= PTE_W;
+    lcr3(V2P(myproc()->pgdir));
+  }
+  else 
+  {
+    if(ref_counters[pa/PGSIZE] > 1)
+    {
+      release(&ref_lock);
+      if((mem = kalloc()) == 0)
+      {
+        myproc()->killed = 1;
+        cprintf("Out of memory\n");
+        return;
+      }
+      memmove(mem, (char*)P2V(pa), PGSIZE);
+      acquire(&ref_lock);
+      ref_counters[pa/PGSIZE] = ref_counters[pa/PGSIZE] - 1;
+      ref_counters[V2P(mem)/PGSIZE] = ref_counters[V2P(mem)/PGSIZE] + 1;
+      release(&ref_lock);
+      *pte = V2P(mem) | PTE_P | PTE_W | PTE_U;
+    }
+    else
+    {
+      release(&ref_lock);
+      panic("Non-positive refcount\n");
+    }
+    lcr3(V2P(myproc()->pgdir));
   }
 }

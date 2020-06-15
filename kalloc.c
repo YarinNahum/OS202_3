@@ -21,6 +21,7 @@ struct {
   struct spinlock lock;
   int use_lock;
   struct run *freelist;
+  int freePages;
 } kmem;
 
 // Initialization happens in two phases.
@@ -33,6 +34,7 @@ kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
   kmem.use_lock = 0;
+  kmem.freePages = 0;
   freerange(vstart, vend);
 }
 
@@ -72,6 +74,7 @@ kfree(char *v)
   r = (struct run*)v;
   r->next = kmem.freelist;
   kmem.freelist = r;
+  kmem.freePages++;
   if(kmem.use_lock)
     release(&kmem.lock);
 }
@@ -89,6 +92,7 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
+  kmem.freePages--;
   if(kmem.use_lock)
     release(&kmem.lock);
   return (char*)r;
@@ -98,13 +102,19 @@ kalloc(void)
 int
 getNumberOfFreePages()
 {
-  struct run* r = kmem.freelist;
+  /*struct run* r = kmem.freelist;
   int n = 0;
   while(r != 0)
   {
     r = r->next;
     n++;
   }
-  return n;
+  return n;*/
+  if(kmem.use_lock)
+    acquire(&kmem.lock);
+  int res = kmem.freePages;
+  if(kmem.use_lock)
+    release(&kmem.lock);
+  return res;
 }
 

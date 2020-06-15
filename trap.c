@@ -77,12 +77,9 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
-    #if SELECTION!=NONE
-    
-    case T_PGFLT:
-      checkSegFault((char*)rcr2());
-      break;
-    #endif
+  case T_PGFLT:
+    checkSegFault((char*)rcr2());
+    break;
   //PAGEBREAK: 13
   default:
     if(myproc() == 0 || (tf->cs&3) == 0){
