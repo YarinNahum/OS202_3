@@ -653,8 +653,9 @@ removePageToSwapFile(pde_t* pgdir)
   *pte &= (~PTE_P);
   acquire(&ref_lock);
   ref_counters[PTE_ADDR(*pte)/PGSIZE] = ref_counters[PTE_ADDR(*pte)/PGSIZE] - 1;
+  if(ref_counters[PTE_ADDR(*pte)/PGSIZE] < 1)
+    kfree((char*)P2V(PTE_ADDR(*pte)));
   release(&ref_lock);
-  kfree((char*)P2V(PTE_ADDR(*pte)));
   lcr3(V2P(pgdir));
   return index;
   end:
@@ -665,7 +666,7 @@ removePageToSwapFile(pde_t* pgdir)
 
 void
 checkSegFault(char* va)
-{  
+{
   struct proc* p = myproc();
   p->numOfPageFaults += 1;
   char* va1 = (char*)PGROUNDDOWN((uint)va);
@@ -674,6 +675,9 @@ checkSegFault(char* va)
     copyOnWrite(va);
     return;
   }
+  #if SELECTION == NONE
+  return;
+  #endif
   char* mem = kalloc();
   if (mem == 0)
     panic("no more memory");
@@ -741,8 +745,9 @@ checkSegFault(char* va)
       *tToRemove &= ~PTE_P;
       acquire(&ref_lock);
       ref_counters[PTE_ADDR(*tToRemove)/PGSIZE] = ref_counters[PTE_ADDR(*tToRemove)/PGSIZE] - 1;
+      if(ref_counters[PTE_ADDR(*tToRemove)/PGSIZE] < 1)
+        kfree((char*)(P2V(PTE_ADDR(*tToRemove))));
       release(&ref_lock);
-      kfree((char*)(P2V(PTE_ADDR(*tToRemove))));
       lcr3(V2P(p->pgdir));
       p->mainMemPages[index].va = va1;
       #if SELECTION == NFUA
