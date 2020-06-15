@@ -651,6 +651,9 @@ removePageToSwapFile(pde_t* pgdir)
   p->mainMemPages[index].va = (char*)0xffffffff;
   *pte |= PTE_PG;
   *pte &= (~PTE_P);
+  acquire(&ref_lock);
+  ref_counters[PTE_ADDR(*pte)/PGSIZE] = ref_counters[PTE_ADDR(*pte)/PGSIZE] - 1;
+  release(&ref_lock);
   kfree((char*)P2V(PTE_ADDR(*pte)));
   lcr3(V2P(pgdir));
   return index;
@@ -666,22 +669,25 @@ checkSegFault(char* va)
   struct proc* p = myproc();
   p->numOfPageFaults += 1;
   char* va1 = (char*)PGROUNDDOWN((uint)va);
-  char* mem = (char*)copyOnWrite(va);
-  if (mem < 0)
-    panic("no more memory");
-  if(mem == 0)
-    mem = va1;
-  int j = 0;
   pte_t* t1 = walkpgdir(p->pgdir, va1, 0);
   if((*t1 & PTE_PG) == 0){
-    panic("page is not page out");
+    copyOnWrite(va);
+    return;
   }
+  char* mem = kalloc();
+  if (mem == 0)
+    panic("no more memory");
+  int j = 0;
   p->numOfPageFaults +=1;
   uint flags = PTE_FLAGS(*t1);
   *t1 = 0;
   flags |= PTE_P | PTE_W | PTE_U;
   flags &= ~PTE_PG;
   *t1 |= PTE_ADDR(V2P(mem)) | flags;
+
+  acquire(&ref_lock);
+  ref_counters[V2P(mem)/PGSIZE] = ref_counters[V2P(mem)/PGSIZE] + 1;
+  release(&ref_lock);
   // for(; i < MAX_PSYC_PAGES; i++)
   // {
   //   if(p->mainMemPages[i].isTaken == 0)
@@ -733,6 +739,9 @@ checkSegFault(char* va)
       pte_t* tToRemove = walkpgdir(p->pgdir,p->mainMemPages[index].va,0);
       *tToRemove |= PTE_PG;
       *tToRemove &= ~PTE_P;
+      acquire(&ref_lock);
+      ref_counters[PTE_ADDR(*tToRemove)/PGSIZE] = ref_counters[PTE_ADDR(*tToRemove)/PGSIZE] - 1;
+      release(&ref_lock);
       kfree((char*)(P2V(PTE_ADDR(*tToRemove))));
       lcr3(V2P(p->pgdir));
       p->mainMemPages[index].va = va1;
@@ -941,16 +950,16 @@ updateAGE()
   }
 }
 
-int
+void
 copyOnWrite(char *va)
 {
   uint pa;
   pte_t *pte;
   char *mem;
   if((uint)va >= KERNBASE || (pte = walkpgdir(myproc()->pgdir, (void*)va, 0)) == 0)
-    return -1;
+    panic("aaa");
   if(!(*pte & PTE_P) && !(*pte && PTE_U))
-    return -1;
+    panic("bbb");
   
   if(*pte & PTE_W)
     panic("COW on writable page");
@@ -961,7 +970,7 @@ copyOnWrite(char *va)
   {
     release(&ref_lock);
     *pte |= PTE_W;
-    return 0;
+    lcr3(V2P(myproc()->pgdir));
   }
   else 
   {
@@ -970,7 +979,7 @@ copyOnWrite(char *va)
       release(&ref_lock);
       if((mem = kalloc()) == 0)
       {
-        return -1;
+        panic("ccc");
       }
       memmove(mem, (char*)P2V(pa), PGSIZE);
       acquire(&ref_lock);
@@ -978,7 +987,6 @@ copyOnWrite(char *va)
       ref_counters[V2P(mem)/PGSIZE] = ref_counters[V2P(mem)/PGSIZE] + 1;
       release(&ref_lock);
       *pte = V2P(mem) | PTE_P | PTE_W | PTE_U;
-      return (int)mem;
     }
     else
     {
@@ -987,5 +995,4 @@ copyOnWrite(char *va)
     }
     lcr3(V2P(myproc()->pgdir));
   }
-  return -1;
 }

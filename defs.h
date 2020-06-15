@@ -212,7 +212,7 @@ void            checkSegFault(char* va);
 void            updateAGE(void);
 void            switchPages(int j,int i);
 void            fixAQ(int index);
-int             copyOnWrite(char *va);
+void            copyOnWrite(char *va);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
